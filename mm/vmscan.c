@@ -2255,6 +2255,20 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	unsigned long ap, fp;
 	enum lru_list lru;
 
+	/* 
+	 * ----Edit by Shashank--
+	 * If swappiness is 0, know that a process has registered with 
+	 * the mem ballooning driver and so no anonymous pages should swap.
+	 * This is an extra check to avoid sc->file_is_tiny check where 
+	 * anonymous page swapping will start even though swappiness is 0.
+	 * So, this essentially bypasses all scan count calculations when 
+	 * swappiness is 0.
+	 */
+	if (!vm_swappiness) {
+		scan_balance = SCAN_FILE;
+		goto out;
+	}
+
 	/* If we have no swap space, do not bother scanning anon pages. */
 	if (!sc->may_swap || mem_cgroup_get_nr_swap_pages(memcg) <= 0) {
 		scan_balance = SCAN_FILE;

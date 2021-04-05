@@ -1,8 +1,9 @@
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
+#include <linux/swap.h> // For vm_swappiness
 
-#define SIG_BALLOON 63
+#define SIG_BALLOON (SIGRTMAX-1)
 
 #define DEBUG 1
 
@@ -13,7 +14,6 @@
     #define DEBUG_PRINT(fmt, args...) /* Don't do anything when DEBUG is off or absent */
 #endif
 
-unsigned short mb_n_reg_procs = 0;
 
 struct mb_n_reg_node_t
 {
@@ -26,6 +26,10 @@ struct mb_n_reg_node_t* mb_n_reg_node_tail = NULL;
 
 
 static struct task_struct *cur_task = NULL;
+
+void mb_disable_anon_page_swap(void);
+
+
 
 asmlinkage long __x64_sys_init_ballooning(void){
     struct kernel_siginfo info;
@@ -47,8 +51,7 @@ asmlinkage long __x64_sys_init_ballooning(void){
     DEBUG_PRINT("Added the calling process to registered process list for ballooning\n");
 
 
-
-    DEBUG_PRINT("Sending a signal to the process\n");
+    DEBUG_PRINT("Sending a test signal to the process\n");
     
 
     memset(&info, 0, sizeof(struct kernel_siginfo));
@@ -57,20 +60,30 @@ asmlinkage long __x64_sys_init_ballooning(void){
     info.si_int = 1234;
 
     /*
-        send_sig_info moved to linux/sched/signal.h since 4.11 and 4.20 has changed siginfo to kernel_siginfo
+        Tip : send_sig_info moved to linux/sched/signal.h since 4.11 
+        and 4.20 has changed siginfo to kernel_siginfo
     */
-    ret = send_sig_info(SIG_BALLOON, &info, cur_task);    //send the signal
+
+    /* send the signal */
+    ret = send_sig_info(SIG_BALLOON, &info, cur_task);    
 
     if (ret < 0) {
-		printk("error sending SIGBALLOON signal\n");
+		DEBUG_PRINT("error sending SIGBALLOON signal\n");
 		return ret;
 	}
+
+    mb_disable_anon_page_swap();
 
     return 0;
 }
 
-long mb_add_proc_to_list(pid_t pid ) {
-    // when list is empty
-   
-   return 0;
+
+// To disable the default kernel swapping algorithm
+// so that no anonymous page is swapped after ballooning driver
+// is initialized
+void mb_disable_anon_page_swap(void){
+    DEBUG_PRINT("Attempting to change vm_swappiness to 0");
+    vm_swappiness = 0; // To Do : Check if a mutex is needed here
+    DEBUG_PRINT("vm_swappiness changed to 0");
 }
+
