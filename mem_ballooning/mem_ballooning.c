@@ -5,52 +5,56 @@
 
 #define SIG_BALLOON (SIGRTMAX-1)
 
-#define DEBUG 1
 
+#define DEBUG 1
 #if defined(DEBUG) && DEBUG > 0
-    #define DEBUG_PRINT(fmt, args...) printk("DEBUG: %s:%d:%s(): " fmt, \
+    #define DEBUG_PRINT(fmt, args...) printk("KDEBUG: %s:%d:%s(): " fmt, \
         __FILE__, __LINE__, __func__, ##args)
 #else
     #define DEBUG_PRINT(fmt, args...) /* Don't do anything when DEBUG is off or absent */
 #endif
 
 
-struct mb_n_reg_node_t
-{
-    pid_t pid;
-    struct mb_n_reg_node_t *next;
-};
-
-struct mb_n_reg_node_t* mb_n_reg_node_head = NULL;
-struct mb_n_reg_node_t* mb_n_reg_node_tail = NULL;
+struct task_struct *mem_balloon_reg_task = NULL;
+int mem_balloon_is_active=0;
+int mem_balloon_signal_sent=0;
 
 
-static struct task_struct *cur_task = NULL;
+/* 
+ * To disable the default kernel swapping algorithm so that
+ * no anonymous page is swapped after ballooning driver is
+ * initialized.
+*/ 
+void mb_disable_anon_page_swap(void){
+    DEBUG_PRINT("Attempting to change vm_swappiness to 0\n");
+    vm_swappiness = 0; // To Do : Check if a mutex is needed here
+    DEBUG_PRINT("vm_swappiness changed to 0\n");
+}
 
-void mb_disable_anon_page_swap(void);
 
-
-
+/* 
+ * Implementation of register ballooning system call.
+*/
 asmlinkage long __x64_sys_init_ballooning(void){
     struct kernel_siginfo info;
     int ret;
-    pid_t proc_pid;
 
     DEBUG_PRINT("init_ballooning syscall has been called\n");
     DEBUG_PRINT("PID of calling process is : %d\n", current->pid);
 
-    /* current is a macro defined in arch/x86/include/asm/current.h
-        expands to a function returning pointer (task_struct) to the current process
-        tgid denotes thread group id
-    */
-
-    /* Assuming non-premptive kernel. Will have to use lock otherwise. */
-    
-    cur_task = get_current();
+    /* 
+     * Save the current process to send the SIGBALLOON signal when needed
+     * Also, mark the mem_balloon_is_active flag to enable the check
+     * for physical memory.
+     *
+     * Note to self : current is a macro defined in arch/x86/include/asm/current.h
+     * and expands to a function returning pointer (task_struct) to the 
+     * current process
+    */  
+    mem_balloon_reg_task = get_current();
+    mem_balloon_is_active = 1;
 
     DEBUG_PRINT("Added the calling process to registered process list for ballooning\n");
-
-
     DEBUG_PRINT("Sending a test signal to the process\n");
     
 
@@ -60,12 +64,12 @@ asmlinkage long __x64_sys_init_ballooning(void){
     info.si_int = 1234;
 
     /*
-        Tip : send_sig_info moved to linux/sched/signal.h since 4.11 
+        Note to self : send_sig_info moved to linux/sched/signal.h since 4.11 
         and 4.20 has changed siginfo to kernel_siginfo
     */
 
-    /* send the signal */
-    ret = send_sig_info(SIG_BALLOON, &info, cur_task);    
+    /* send the signal to the process */
+    ret = send_sig_info(SIG_BALLOON, &info, mem_balloon_reg_task);    
 
     if (ret < 0) {
 		DEBUG_PRINT("error sending SIGBALLOON signal\n");
@@ -78,12 +82,5 @@ asmlinkage long __x64_sys_init_ballooning(void){
 }
 
 
-// To disable the default kernel swapping algorithm
-// so that no anonymous page is swapped after ballooning driver
-// is initialized
-void mb_disable_anon_page_swap(void){
-    DEBUG_PRINT("Attempting to change vm_swappiness to 0");
-    vm_swappiness = 0; // To Do : Check if a mutex is needed here
-    DEBUG_PRINT("vm_swappiness changed to 0");
-}
+
 

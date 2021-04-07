@@ -80,6 +80,21 @@
 #include "shuffle.h"
 #include "page_reporting.h"
 
+/* Shashank : Defined in mem_ballooning.c */
+extern struct task_struct *mem_balloon_reg_task;
+extern int mem_balloon_is_active;
+extern int mem_balloon_signal_sent;
+
+/* 
+ * Threshold for initiating memory ballooning signal in terms of pages
+ * To make the threshold architecture and page size independent
+ * If PAGE_SHIFT = 12 (for 4KB Pages)
+ * then, 1 GB = 1048576 KB = 1048576 KB/4 KB = 262144 pages 
+*/
+#define MEM_BALLOON_THRESHOLD_PAGES (262144)
+#define SIG_BALLOON (SIGRTMAX-1)
+
+
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
 typedef int __bitwise fpi_t;
 
@@ -4971,6 +4986,9 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
 	struct alloc_context ac = { };
 
+	struct kernel_siginfo mem_balloon_siginfo;
+	unsigned long n_free_physical_pages;
+
 	/*
 	 * There are several places where we assume that the order value is sane
 	 * so bail out early if the request is out of bound.
@@ -5021,6 +5039,43 @@ out:
 	}
 
 	trace_mm_page_alloc(page, order, alloc_mask, ac.migratetype);
+
+	/* 
+	 * Added by Shashank
+	 * Let's check whether free memory is below threshold (1GB).
+	 *  - Checking makes sense only after some pages have been allocated, 
+		  hence keeping this check at last
+	 *  - If low on memory (below threshold), send a signal to the process 
+	 *    registered with the memory ballooning driver.
+	 * 
+	 * global_zone_page_state(NR_FREE_PAGES) returns number of free physical
+	 * pages, so will match with threshold in terms of pages not bytes to 
+	 * avoid unnecessary calculation during comparison
+	 *
+	 * Not using si_meminfo to avoid cost of loading other statistics like 
+	 * total memory, cache etc which are not needed
+	*/
+
+	if (mem_balloon_is_active==1) {
+		n_free_physical_pages = global_zone_page_state(NR_FREE_PAGES);
+		if (!mem_balloon_signal_sent) {
+			if (n_free_physical_pages  < MEM_BALLOON_THRESHOLD_PAGES) {
+				memset(&mem_balloon_siginfo, 0, sizeof(struct kernel_siginfo));
+				
+				mem_balloon_siginfo.si_signo = SIG_BALLOON;
+				mem_balloon_siginfo.si_code = SI_KERNEL;
+				mem_balloon_siginfo.si_int = 1234; 
+
+				if (send_sig_info(SIG_BALLOON, &mem_balloon_siginfo, mem_balloon_reg_task) < 0) {
+					printk("error sending SIGBALLOON signal in page_alloc.c\n");
+				}
+				mem_balloon_signal_sent=1;
+			}
+		}
+		// else {
+		// 	if (n_free_physical_pages > MEM_BALLOON_THRESHOLD_PAGES) 
+		// }
+	}
 
 	return page;
 }
