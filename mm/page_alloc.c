@@ -80,19 +80,39 @@
 #include "shuffle.h"
 #include "page_reporting.h"
 
-/* Shashank : Defined in mem_ballooning.c */
+#include <linux/workqueue.h>
+
+/******** Begin : Addition by Shashank ********/
+
+/* The following externs are defined in mem_ballooning.c */
+
+/* The task struct for the registered task */
 extern struct task_struct *mem_balloon_reg_task;
+extern pid_t mem_balloon_reg_task_pid;
+
+/* Tells if an application has registered with the ballooning driver*/
 extern int mem_balloon_is_active;
-extern int mem_balloon_signal_sent;
+
+/* 
+ * Flag indicating whether we have completed the wait time 
+ * after sending the last SIGBALLOON signal 
+*/
+extern int mem_balloon_should_send_signal;
+
+/* We'll use this to schedule setting the flag after x seconds*/
+static struct delayed_work mem_balloon_flag_set_delayed_work;
 
 /* 
  * Threshold for initiating memory ballooning signal in terms of pages
  * To make the threshold architecture and page size independent
- * If PAGE_SHIFT = 12 (for 4KB Pages)
+ * For example, if PAGE_SHIFT = 12 (for 4KB Pages)
  * then, 1 GB = 1048576 KB = 1048576 KB/4 KB = 262144 pages 
 */
-#define MEM_BALLOON_THRESHOLD_PAGES (262144)
+#define MEM_BALLOON_THRESHOLD_PAGES (1048576 >> (PAGE_SHIFT-10))
 #define SIG_BALLOON (SIGRTMAX-1)
+
+/******** End : Addition by Shashank ********/
+
 
 
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
@@ -4974,6 +4994,14 @@ static inline bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
 	return true;
 }
 
+
+void mem_balloon_set_signal_flag_work_handler(struct work_struct *work)
+{
+	mem_balloon_should_send_signal = 1;
+	printk("-----------Flag turned on for sending SIGBALLOON signal----------\n");
+}
+
+
 /*
  * This is the 'heart' of the zoned buddy allocator.
  */
@@ -4988,6 +5016,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 
 	struct kernel_siginfo mem_balloon_siginfo;
 	unsigned long n_free_physical_pages;
+	struct task_struct mem_balloon_reg_process_task_struct;
 
 	/*
 	 * There are several places where we assume that the order value is sane
@@ -5058,23 +5087,26 @@ out:
 
 	if (mem_balloon_is_active==1) {
 		n_free_physical_pages = global_zone_page_state(NR_FREE_PAGES);
-		if (!mem_balloon_signal_sent) {
+		if (mem_balloon_should_send_signal) {
 			if (n_free_physical_pages  < MEM_BALLOON_THRESHOLD_PAGES) {
 				memset(&mem_balloon_siginfo, 0, sizeof(struct kernel_siginfo));
 				
 				mem_balloon_siginfo.si_signo = SIG_BALLOON;
 				mem_balloon_siginfo.si_code = SI_KERNEL;
 				mem_balloon_siginfo.si_int = 1234; 
-
+				
+				rcu_read_lock();
 				if (send_sig_info(SIG_BALLOON, &mem_balloon_siginfo, mem_balloon_reg_task) < 0) {
 					printk("error sending SIGBALLOON signal in page_alloc.c\n");
 				}
-				mem_balloon_signal_sent=1;
+				mem_balloon_should_send_signal=0;
+				rcu_read_unlock();
+
+				INIT_DELAYED_WORK(&mem_balloon_flag_set_delayed_work, mem_balloon_set_signal_flag_work_handler);
+				schedule_delayed_work(&mem_balloon_flag_set_delayed_work, 10*HZ);
 			}
 		}
-		// else {
-		// 	if (n_free_physical_pages > MEM_BALLOON_THRESHOLD_PAGES) 
-		// }
+
 	}
 
 	return page;

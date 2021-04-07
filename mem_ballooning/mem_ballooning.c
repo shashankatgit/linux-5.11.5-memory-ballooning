@@ -17,7 +17,9 @@
 
 struct task_struct *mem_balloon_reg_task = NULL;
 int mem_balloon_is_active=0;
-int mem_balloon_signal_sent=0;
+int mem_balloon_should_send_signal=1;
+pid_t mem_balloon_reg_task_pid;
+
 
 
 /* 
@@ -36,8 +38,8 @@ void mb_disable_anon_page_swap(void){
  * Implementation of register ballooning system call.
 */
 asmlinkage long __x64_sys_init_ballooning(void){
-    struct kernel_siginfo info;
-    int ret;
+    // struct kernel_siginfo info;
+    // int ret;
 
     DEBUG_PRINT("init_ballooning syscall has been called\n");
     DEBUG_PRINT("PID of calling process is : %d\n", current->pid);
@@ -52,16 +54,17 @@ asmlinkage long __x64_sys_init_ballooning(void){
      * current process
     */  
     mem_balloon_reg_task = get_current();
+    mem_balloon_reg_task_pid = current->pid;
     mem_balloon_is_active = 1;
 
-    DEBUG_PRINT("Added the calling process to registered process list for ballooning\n");
-    DEBUG_PRINT("Sending a test signal to the process\n");
+    DEBUG_PRINT("Saving the current process identity for sending ballooning signal later\n");
+    // DEBUG_PRINT("Sending a test signal to the process\n");
     
 
-    memset(&info, 0, sizeof(struct kernel_siginfo));
-    info.si_signo = SIG_BALLOON;
-    info.si_code = SI_KERNEL;
-    info.si_int = 1234;
+    // memset(&info, 0, sizeof(struct kernel_siginfo));
+    // info.si_signo = SIG_BALLOON;
+    // info.si_code = SI_KERNEL;
+    // info.si_int = 1234;
 
     /*
         Note to self : send_sig_info moved to linux/sched/signal.h since 4.11 
@@ -69,12 +72,12 @@ asmlinkage long __x64_sys_init_ballooning(void){
     */
 
     /* send the signal to the process */
-    ret = send_sig_info(SIG_BALLOON, &info, mem_balloon_reg_task);    
+    // ret = send_sig_info(SIG_BALLOON, &info, mem_balloon_reg_task);    
 
-    if (ret < 0) {
-		DEBUG_PRINT("error sending SIGBALLOON signal\n");
-		return ret;
-	}
+    // if (ret < 0) {
+	// 	DEBUG_PRINT("error sending SIGBALLOON signal\n");
+	// 	return ret;
+	// }
 
     mb_disable_anon_page_swap();
 
