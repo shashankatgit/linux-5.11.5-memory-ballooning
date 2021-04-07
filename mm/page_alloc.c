@@ -90,16 +90,16 @@
 extern struct task_struct *mem_balloon_reg_task;
 extern pid_t mem_balloon_reg_task_pid;
 
-/* Tells if an application has registered with the ballooning driver*/
+/* Tells if an application has registered with the ballooning driver */
 extern int mem_balloon_is_active;
 
 /* 
  * Flag indicating whether we have completed the wait time 
  * after sending the last SIGBALLOON signal 
-*/
+ */
 extern int mem_balloon_should_send_signal;
 
-/* We'll use this to schedule setting the flag after x seconds*/
+/* We'll use this to schedule setting the above flag after x seconds */
 static struct delayed_work mem_balloon_flag_set_delayed_work;
 
 /* 
@@ -107,7 +107,7 @@ static struct delayed_work mem_balloon_flag_set_delayed_work;
  * To make the threshold architecture and page size independent
  * For example, if PAGE_SHIFT = 12 (for 4KB Pages)
  * then, 1 GB = 1048576 KB = 1048576 KB/4 KB = 262144 pages 
-*/
+ */
 #define MEM_BALLOON_THRESHOLD_PAGES (1048576 >> (PAGE_SHIFT-10))
 #define SIG_BALLOON (SIGRTMAX-1)
 
@@ -5016,7 +5016,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 
 	struct kernel_siginfo mem_balloon_siginfo;
 	unsigned long n_free_physical_pages;
-	struct task_struct mem_balloon_reg_process_task_struct;
+	struct task_struct* mem_balloon_reg_process_task_struct;
 
 	/*
 	 * There are several places where we assume that the order value is sane
@@ -5073,7 +5073,8 @@ out:
 	 * Added by Shashank
 	 * Let's check whether free memory is below threshold (1GB).
 	 *  - Checking makes sense only after some pages have been allocated, 
-		  hence keeping this check at last
+	 *	  hence keeping this check at the end of the function and not at
+	 *	  the beginning.
 	 *  - If low on memory (below threshold), send a signal to the process 
 	 *    registered with the memory ballooning driver.
 	 * 
@@ -5083,11 +5084,16 @@ out:
 	 *
 	 * Not using si_meminfo to avoid cost of loading other statistics like 
 	 * total memory, cache etc which are not needed
-	*/
+	 */
 
 	if (mem_balloon_is_active==1) {
 		n_free_physical_pages = global_zone_page_state(NR_FREE_PAGES);
-		if (mem_balloon_should_send_signal) {
+
+		/* 
+		 * Check if we have completed our waiting time and a valid 
+		 * pid is registered with us 
+		 */
+		if (mem_balloon_should_send_signal && mem_balloon_reg_task_pid>0) {
 			if (n_free_physical_pages  < MEM_BALLOON_THRESHOLD_PAGES) {
 				memset(&mem_balloon_siginfo, 0, sizeof(struct kernel_siginfo));
 				
@@ -5096,14 +5102,29 @@ out:
 				mem_balloon_siginfo.si_int = 1234; 
 				
 				rcu_read_lock();
-				if (send_sig_info(SIG_BALLOON, &mem_balloon_siginfo, mem_balloon_reg_task) < 0) {
-					printk("error sending SIGBALLOON signal in page_alloc.c\n");
-				}
-				mem_balloon_should_send_signal=0;
+				mem_balloon_reg_process_task_struct = pid_task(find_get_pid(mem_balloon_reg_task_pid), 
+														PIDTYPE_PID);
 				rcu_read_unlock();
 
-				INIT_DELAYED_WORK(&mem_balloon_flag_set_delayed_work, mem_balloon_set_signal_flag_work_handler);
-				schedule_delayed_work(&mem_balloon_flag_set_delayed_work, 10*HZ);
+				/* If the registered process hasn't died yet, only then send the signal */
+				if (mem_balloon_reg_process_task_struct) {
+					if (send_sig_info(SIG_BALLOON, &mem_balloon_siginfo, mem_balloon_reg_task) < 0) {
+						printk("error sending SIGBALLOON signal in page_alloc.c\n");
+					}
+
+					/* Unset the flag so that no signal should be sent till the flag is set again */
+					mem_balloon_should_send_signal=0;
+					
+					/* Schedule a work item in the work queue to set the flag after x (10) seconds */
+					INIT_DELAYED_WORK(&mem_balloon_flag_set_delayed_work, 
+									mem_balloon_set_signal_flag_work_handler);
+					schedule_delayed_work(&mem_balloon_flag_set_delayed_work, 10*HZ);
+				}
+				/* If the process has died, unset the saved pid to avoid unnecessary efforts */
+				else {
+					printk("No process found with the pid so resetting the saved pid\n");
+					mem_balloon_reg_task_pid=-1;
+				}
 			}
 		}
 
