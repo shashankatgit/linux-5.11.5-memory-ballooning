@@ -1,7 +1,12 @@
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
-#include <linux/swap.h> // For vm_swappiness
+#include <linux/swap.h> 
+
+/*
+ * Author : Shashank Singh (shashanksing@iisc.ac.in, cse.shashanksingh@gmail.com)
+ * Contains the definition for a system call init_ballooning for 64 bit linux kernel.
+ */
 
 #define SIG_BALLOON (SIGRTMAX-1)
 
@@ -26,21 +31,33 @@ pid_t mem_balloon_reg_task_pid;
  * To disable the default kernel swapping algorithm so that
  * no anonymous page is swapped after ballooning driver is
  * initialized.
-*/ 
+ */ 
 void mb_disable_anon_page_swap(void){
-    DEBUG_PRINT("Attempting to change vm_swappiness to 0\n");
+    /*
+     * Following approaches were explored to disable swapping of anon pages
+     *  - Pinning of process pages in RAM 
+     *  - Bypassing the swapping mechanism in shrink_page_list
+     *  - Changing the scan balance of get_scan_count - This by far seems to be 
+     *    the best one, considering it has a very clean code change and just instructs
+     *    that no anon page must be swapped. So, kernel won't even try to loop
+     *    through anon pages.
+     *
+     * The vm_swappiness param is not as important as of now, as we are directly 
+     * checking in vm_scan.c that if memory ballooning is enabled, set the scan_balance
+     * to SCAN_FILE.
+     */
+
+    DEBUG_PRINT("Trying to change vm_swappinees to disable swapping\n");
     vm_swappiness = 0; // To Do : Check if a mutex is needed here
     DEBUG_PRINT("vm_swappiness changed to 0\n");
 }
 
 
+
 /* 
  * Implementation of register ballooning system call.
-*/
+ */
 asmlinkage long __x64_sys_init_ballooning(void){
-    // struct kernel_siginfo info;
-    // int ret;
-
     DEBUG_PRINT("init_ballooning syscall has been called\n");
     DEBUG_PRINT("PID of calling process is : %d\n", current->pid);
 
@@ -57,28 +74,8 @@ asmlinkage long __x64_sys_init_ballooning(void){
     mem_balloon_reg_task_pid = current->pid;
     mem_balloon_is_active = 1;
 
-    DEBUG_PRINT("Saving the current process identity for sending ballooning signal later\n");
-    // DEBUG_PRINT("Sending a test signal to the process\n");
+    DEBUG_PRINT("Saved the current process identity for sending ballooning signal later\n");
     
-
-    // memset(&info, 0, sizeof(struct kernel_siginfo));
-    // info.si_signo = SIG_BALLOON;
-    // info.si_code = SI_KERNEL;
-    // info.si_int = 1234;
-
-    /*
-        Note to self : send_sig_info moved to linux/sched/signal.h since 4.11 
-        and 4.20 has changed siginfo to kernel_siginfo
-    */
-
-    /* send the signal to the process */
-    // ret = send_sig_info(SIG_BALLOON, &info, mem_balloon_reg_task);    
-
-    // if (ret < 0) {
-	// 	DEBUG_PRINT("error sending SIGBALLOON signal\n");
-	// 	return ret;
-	// }
-
     mb_disable_anon_page_swap();
 
     return 0;
