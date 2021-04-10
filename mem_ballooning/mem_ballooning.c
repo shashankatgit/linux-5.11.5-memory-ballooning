@@ -20,9 +20,25 @@
 #endif
 
 
-struct task_struct *mem_balloon_reg_task = NULL;
+/*
+ * Flag that denotes whether memory ballooning some process has
+ * registered for memory ballooning. This flag is used to send 
+ * SIGBALLOON to the process as well as disabling anon page 
+ * swapping in vm_scan.c
+ */
 int mem_balloon_is_active=0;
+
+/*
+ * Flag that denotes whether a signal should be sent to process
+ * when free phy mem falls below threshold. Used to implement 
+ * the wait time of 10 seconds before sending another signal.
+ */
 int mem_balloon_should_send_signal=1;
+
+/*
+ * The pid of the process currently registered for memory
+ * ballooning. Used to send the SIGBALLOON signal to the process.
+ */
 pid_t mem_balloon_reg_task_pid;
 
 
@@ -70,7 +86,7 @@ asmlinkage long __x64_sys_init_ballooning(void){
      * and expands to a function returning pointer (task_struct) to the 
      * current process
     */  
-    mem_balloon_reg_task = get_current();
+
     mem_balloon_reg_task_pid = current->pid;
     mem_balloon_is_active = 1;
 

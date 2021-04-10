@@ -86,8 +86,7 @@
 
 /* The following externs are defined in mem_ballooning.c */
 
-/* The task struct for the registered task */
-extern struct task_struct *mem_balloon_reg_task;
+/* The pid for the registered task */
 extern pid_t mem_balloon_reg_task_pid;
 
 /* Tells if an application has registered with the ballooning driver */
@@ -5108,7 +5107,7 @@ out:
 
 				/* If the registered process hasn't died yet, only then send the signal */
 				if (mem_balloon_reg_process_task_struct) {
-					if (send_sig_info(SIG_BALLOON, &mem_balloon_siginfo, mem_balloon_reg_task) < 0) {
+					if (send_sig_info(SIG_BALLOON, &mem_balloon_siginfo, mem_balloon_reg_process_task_struct) < 0) {
 						printk("error sending SIGBALLOON signal in page_alloc.c\n");
 					}
 
