@@ -1365,6 +1365,7 @@ int __sys_getsockopt(int fd, int level, int optname, char __user *optval,
 int __sys_setsockopt(int fd, int level, int optname, char __user *optval,
 		int optlen);
 
-asmlinkage long sys_init_ballooning(void);  
+// asmlinkage long sys_init_ballooning(void);  
+// asmlinkage long sys_mb_suggest_swap(unsigned long* virt_pg_list_start, unsigned list_size);
 
 #endif

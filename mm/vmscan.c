@@ -2273,7 +2273,7 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	 * shrink_page_list as it eliminates the need to loop on anonymous
 	 * page lru lists to see if the pages can be swapped.
 	 */
-	if (mem_balloon_is_active || !vm_swappiness) {
+	if (mem_balloon_is_active && 0) {
 		scan_balance = SCAN_FILE;
 		goto out;
 	}
