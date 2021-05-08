@@ -61,6 +61,12 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
 
+/*
+ * Edit by Shashank
+*/
+extern int mem_balloon_is_active;
+
+
 struct scan_control {
 	/* How many pages shrink_list() should reclaim */
 	unsigned long nr_to_reclaim;
@@ -1092,6 +1098,23 @@ static unsigned int shrink_page_list(struct list_head *page_list,
 
 		page = lru_to_page(page_list);
 		list_del(&page->lru);
+
+		// /* Edit by Shashank 
+		//  * Allowed Conditions for anonymous pages
+		//  * 1. If Current process is kswapd, allow if :-
+		//  * 		 - page is marked for reclaim
+		//  * 2. If current process is not kswapd, then it should be our process
+		//  *
+		// */
+		// if(mem_balloon_is_active && PageAnon(page)){
+		// 	if( (current_is_kswapd() && !PageReclaim(page)) || (mem_balloon_reg_task_pid == current->pid))
+		// 		goto keep;
+        //  }
+ 
+        //  page_unlock_anon_vma(anon_vma);
+        // //  return ret;
+		// }	
+		// End : Edit by Shashank 
 
 		if (!trylock_page(page))
 			goto keep;
@@ -2256,7 +2279,7 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	enum lru_list lru;
 
 
-	extern int mem_balloon_is_active;
+
 
 	/* 
 	 * ----Edit by Shashank--
@@ -2273,7 +2296,7 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	 * shrink_page_list as it eliminates the need to loop on anonymous
 	 * page lru lists to see if the pages can be swapped.
 	 */
-	if (mem_balloon_is_active && 0) {
+	if (mem_balloon_is_active) {
 		scan_balance = SCAN_FILE;
 		goto out;
 	}
@@ -2466,6 +2489,8 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 	struct blk_plug plug;
 	bool scan_adjusted;
 
+	unsigned long mb_nr_reclaimed;
+
 	get_scan_count(lruvec, sc, nr);
 
 	/* Record the original scan target for proportional adjustments later */
@@ -2499,6 +2524,15 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 				nr_reclaimed += shrink_list(lru, nr_to_scan,
 							    lruvec, sc);
 			}
+		}
+
+		/* Edit by Shashank */
+		if(mem_balloon_is_active) {
+			mb_nr_reclaimed = 0;
+			mb_nr_reclaimed += shrink_list(LRU_INACTIVE_ANON, min(nr_to_reclaim, 128*SWAP_CLUSTER_MAX),
+							    lruvec, sc);
+			printk("Freed %lu pages from memory through custom called shrink_list on LRU_INACTIVE_ANON\n", mb_nr_reclaimed);
+			nr_reclaimed += mb_nr_reclaimed;								
 		}
 
 		cond_resched();
@@ -4060,6 +4094,35 @@ unsigned long shrink_all_memory(unsigned long nr_to_reclaim)
 	return nr_reclaimed;
 }
 #endif /* CONFIG_HIBERNATION */
+
+/* Added by Shashank */
+unsigned long mb_shrink_all_memory(unsigned long nr_to_reclaim)
+{
+	struct scan_control sc = {
+		.nr_to_reclaim = nr_to_reclaim,
+		.gfp_mask = GFP_HIGHUSER_MOVABLE,
+		.reclaim_idx = MAX_NR_ZONES - 1,
+		.priority = DEF_PRIORITY,
+		.may_writepage = 0,
+		.may_unmap = 0,
+		.may_swap = 1,
+	};
+	struct zonelist *zonelist = node_zonelist(numa_node_id(), sc.gfp_mask);
+	unsigned long nr_reclaimed;
+	unsigned int noreclaim_flag;
+
+	fs_reclaim_acquire(sc.gfp_mask);
+	noreclaim_flag = memalloc_noreclaim_save();
+	set_task_reclaim_state(current, &sc.reclaim_state);
+
+	nr_reclaimed = do_try_to_free_pages(zonelist, &sc);
+
+	set_task_reclaim_state(current, NULL);
+	memalloc_noreclaim_restore(noreclaim_flag);
+	fs_reclaim_release(sc.gfp_mask);
+
+	return nr_reclaimed;
+}
 
 /*
  * This kswapd start function will be called by init and node-hot-add.

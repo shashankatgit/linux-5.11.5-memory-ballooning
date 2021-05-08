@@ -1,7 +1,7 @@
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
-#include <linux/swap.h> 
+// #include <linux/swap.h> 
 
 #include <linux/mm.h>
 #include <linux/mman.h>
@@ -9,6 +9,7 @@
 #include <linux/syscalls.h>
 #include <linux/mmzone.h>
 
+#include <linux/delay.h>
 
 
 /*
@@ -51,6 +52,11 @@ int mem_balloon_should_send_signal=1;
  */
 pid_t mem_balloon_reg_task_pid;
 
+
+// extern unsigned long shrink_all_memory(unsigned long nr_pages);
+extern unsigned long mb_shrink_all_memory(unsigned long nr_to_reclaim);
+
+LIST_HEAD(mb_page_list);
 
 /* 
  * To disable the default kernel swapping algorithm so that
@@ -121,7 +127,7 @@ SYSCALL_DEFINE0(init_ballooning){
   * concern boundaries. So, I went ahead with virtual pages although there's a slight
   * performance impact due to the page walk involved before swapping.  
  */
-SYSCALL_DEFINE2(mb_suggest_swap, unsigned long* __user, virt_pg_list_start, unsigned, list_size){
+SYSCALL_DEFINE2(mb_suggest_swap, unsigned long* __user, virt_pg_list_start, unsigned long, list_size){
     unsigned i;
     struct mm_struct *cur_mm =  current->mm;
     unsigned long va_pg_start;
@@ -130,9 +136,10 @@ SYSCALL_DEFINE2(mb_suggest_swap, unsigned long* __user, virt_pg_list_start, unsi
     unsigned long n_bytes_uncopied;
 
     int ret_val_madvise;
+    unsigned long ret_free_pages;
 
     DEBUG_PRINT("mb_suggest_swap syscall has been called with list start : %px, %lx\n", virt_pg_list_start, (unsigned long)virt_pg_list_start);
-    DEBUG_PRINT("list size : %d\n", list_size);
+    DEBUG_PRINT("list size : %lu\n", list_size);
 
     virt_pg_list_kernel = kmalloc(sizeof(unsigned long)*list_size,GFP_KERNEL);
 
@@ -155,7 +162,12 @@ SYSCALL_DEFINE2(mb_suggest_swap, unsigned long* __user, virt_pg_list_start, unsi
 
     kfree(virt_pg_list_kernel);
 
+    DEBUG_PRINT("Sleeping for 1 second before calling mb_shrink_all_memory funtion\n");
+    msleep(1000);
     
+    DEBUG_PRINT("Calling mb_shrink_all_memory funtion\n");
+    ret_free_pages = mb_shrink_all_memory((unsigned long)list_size);
+    DEBUG_PRINT("mb_shrink_all_memory returned %lu pages as freed pages\n", ret_free_pages);
 
     return 0;
 }
