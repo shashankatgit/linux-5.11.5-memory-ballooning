@@ -125,36 +125,39 @@ SYSCALL_DEFINE0(init_ballooning){
   * The first is a breach of security as no door should be opened to userspace to 
   * manipulate physical pages directly as they don't respect process isolation and 
   * concern boundaries. So, I went ahead with virtual pages although there's a slight
-  * performance impact due to the page walk involved before swapping.  
+  * performance impact due to the repeated VA->PA translation involved before swapping.  
  */
-SYSCALL_DEFINE2(mb_suggest_swap, unsigned long* __user, virt_pg_list_start, unsigned long, list_size){
+SYSCALL_DEFINE2(mb_suggest_swap, unsigned long long* __user, virt_pg_list_start, unsigned long long, list_size){
     unsigned i;
     struct mm_struct *cur_mm =  current->mm;
-    unsigned long va_pg_start;
+    unsigned long long va_pg_start;
 
-    unsigned long *virt_pg_list_kernel;
-    unsigned long n_bytes_uncopied;
+    unsigned long long *virt_pg_list_kernel;
+    unsigned long long n_bytes_uncopied;
 
     int ret_val_madvise;
-    unsigned long ret_free_pages;
+    unsigned long long ret_free_pages = 0;
+    unsigned long n_to_shrink_pages;
 
-    DEBUG_PRINT("mb_suggest_swap syscall has been called with list start : %px, %lx\n", virt_pg_list_start, (unsigned long)virt_pg_list_start);
-    DEBUG_PRINT("list size : %lu\n", list_size);
+    DEBUG_PRINT("mb_suggest_swap syscall has been called with list start : %px, %llx\n", virt_pg_list_start, (unsigned long long)virt_pg_list_start);
+    DEBUG_PRINT("list size : %llu\n", list_size);
 
-    virt_pg_list_kernel = kmalloc(sizeof(unsigned long)*list_size,GFP_KERNEL);
+    virt_pg_list_kernel = kmalloc(sizeof(unsigned long long)*list_size,GFP_KERNEL);
 
-    n_bytes_uncopied = copy_from_user(virt_pg_list_kernel, virt_pg_list_start, sizeof(unsigned long)*list_size);
+    n_bytes_uncopied = copy_from_user(virt_pg_list_kernel, virt_pg_list_start, sizeof(unsigned long long)*list_size);
 
     if(n_bytes_uncopied) {
-        DEBUG_PRINT("copy_to_user couldn't copy %lu bytes\n", n_bytes_uncopied);
+        DEBUG_PRINT("copy_to_user couldn't copy %llu bytes\n", n_bytes_uncopied);
     }
 
     for(i=0; i<list_size; ++i) {
         va_pg_start = *(virt_pg_list_kernel+i);
-        // DEBUG_PRINT("Trying to swap out page : %lx\n", va_pg_start);
+
         ret_val_madvise = do_madvise(cur_mm, va_pg_start, PAGE_SIZE_BYTES, MADV_PAGEOUT);
+        // ret_free_pages += mb_shrink_all_memory((unsigned long) 4);
         if(ret_val_madvise) {
-            DEBUG_PRINT("------ERROR : do_madvise returned non zero value--------\n");
+            DEBUG_PRINT("------ERROR : do_madvise failed and returned non zero value for VA : %llx --------\n", va_pg_start);
+            break;
         }
 
         
@@ -162,12 +165,20 @@ SYSCALL_DEFINE2(mb_suggest_swap, unsigned long* __user, virt_pg_list_start, unsi
 
     kfree(virt_pg_list_kernel);
 
-    DEBUG_PRINT("Sleeping for 1 second before calling mb_shrink_all_memory funtion\n");
-    msleep(1000);
+    // DEBUG_PRINT("mb_shrink_all_memory returned total %lu pages as freed pages\n", ret_free_pages);
+
+    // DEBUG_PRINT("Sleeping for 1 second before calling mb_shrink_all_memory funtion\n");
+    // msleep(1000);
     
     DEBUG_PRINT("Calling mb_shrink_all_memory funtion\n");
-    ret_free_pages = mb_shrink_all_memory((unsigned long)list_size);
-    DEBUG_PRINT("mb_shrink_all_memory returned %lu pages as freed pages\n", ret_free_pages);
+    n_to_shrink_pages = (unsigned long )list_size;
+
+    // Try to claim at least 256MB from inactive anon lru list (which have completed write to swap) 
+    if(n_to_shrink_pages < (1<<16)) {
+        n_to_shrink_pages = (1<<16);
+    }
+    ret_free_pages = mb_shrink_all_memory(n_to_shrink_pages);
+    DEBUG_PRINT("mb_shrink_all_memory returned %llu pages as freed pages\n", ret_free_pages);
 
     return 0;
 }

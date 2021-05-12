@@ -2490,6 +2490,15 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 	bool scan_adjusted;
 
 	unsigned long mb_nr_reclaimed;
+	struct scan_control new_sc = {
+		.nr_to_reclaim = nr_to_reclaim,
+		.gfp_mask = GFP_HIGHUSER_MOVABLE,
+		.reclaim_idx = MAX_NR_ZONES - 1,
+		.priority = DEF_PRIORITY,
+		.may_writepage = 0,
+		.may_unmap = 0,
+		.may_swap = 1,
+	};
 
 	get_scan_count(lruvec, sc, nr);
 
@@ -2527,11 +2536,12 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 		}
 
 		/* Edit by Shashank */
+		
 		if(mem_balloon_is_active) {
 			mb_nr_reclaimed = 0;
-			mb_nr_reclaimed += shrink_list(LRU_INACTIVE_ANON, min(nr_to_reclaim, 128*SWAP_CLUSTER_MAX),
-							    lruvec, sc);
-			printk("Freed %lu pages from memory through custom called shrink_list on LRU_INACTIVE_ANON\n", mb_nr_reclaimed);
+			mb_nr_reclaimed += shrink_list(LRU_INACTIVE_ANON, min(max(nr_to_reclaim,4*SWAP_CLUSTER_MAX), 128*SWAP_CLUSTER_MAX),
+							    lruvec, &new_sc);
+			// printk("Freed %lu pages from memory through custom called shrink_list on LRU_INACTIVE_ANON\n", mb_nr_reclaimed);
 			nr_reclaimed += mb_nr_reclaimed;								
 		}
 
