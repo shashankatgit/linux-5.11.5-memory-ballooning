@@ -9,16 +9,25 @@
 #include <linux/syscalls.h>
 #include <linux/mmzone.h>
 
-#include <linux/delay.h>
+#include <linux/workqueue.h>
 
 
 /*
  * Author : Shashank Singh (shashanksing@iisc.ac.in, cse.shashanksingh@gmail.com)
- * Contains the definition for a system call init_ballooning for 64 bit linux kernel.
+ * Contains the definition for following system calls for 64 bit linux kernel.
+ *      - init_ballooning : used by userspace appl. to register to ballooning driver
+ *      - mb_suggest_swap : used by userspace appl. to suggest a list of pages to 
+ *        swap out
  */
 
 #define SIG_BALLOON (SIGRTMAX-1)
 #define PAGE_SIZE_BYTES (4096)
+
+/*
+ * This number of pages will be attempted to be freed from inactive
+ * list if they've completed WB to swapfile. Current value is 3*128 MB
+*/
+#define N_RECLAIM_INACT_PAGES (3*(1<<15))
 
 #define DEBUG 1
 #if defined(DEBUG) && DEBUG > 0
@@ -37,8 +46,6 @@
  */
 int mem_balloon_is_active=0;
 
-
-
 /*
  * Flag that denotes whether a signal should be sent to process
  * when free phy mem falls below threshold. Used to implement 
@@ -52,18 +59,82 @@ int mem_balloon_should_send_signal=1;
  */
 pid_t mem_balloon_reg_task_pid;
 
-
-// extern unsigned long shrink_all_memory(unsigned long nr_pages);
+/*
+ * New function added to mm/vmscan.c, it is practically a copy of already
+ * existing function shrink_all_memory in the same file. This one has a 
+ * different scan_control and is used for freeing unmapped pages after 
+ * their writeback to swap completes.
+*/
 extern unsigned long mb_shrink_all_memory(unsigned long nr_to_reclaim);
 
-LIST_HEAD(mb_page_list);
+/* We'll use this to schedule setting the above flag after x seconds */
+static struct delayed_work mem_balloon_flag_set_delayed_work;
 
 /* 
- * To disable the default kernel swapping algorithm so that
- * no anonymous page is swapped after ballooning driver is
- * initialized.
- */ 
-void mb_disable_anon_page_swap(void){
+ * Threshold for initiating memory ballooning signal in terms of pages
+ * To make the threshold architecture and page size independent
+ * For example, if PAGE_SHIFT = 12 (for 4KB Pages)
+ * then, 1 GB = 1048576 KB = 1048576 KB/4 KB = 262144 pages 
+ */
+#define MEM_BALLOON_THRESHOLD_PAGES (1048576 >> (PAGE_SHIFT-10))
+#define SIG_BALLOON (SIGRTMAX-1)
+void mem_balloon_set_signal_flag_work_handler(struct work_struct *work)
+{
+    struct kernel_siginfo mem_balloon_siginfo;
+	unsigned long n_free_physical_pages;
+	struct task_struct* mem_balloon_reg_process_task_struct;
+
+	printk("Checking free memory status and deciding to send signal\n");
+    if (mem_balloon_is_active==1) {
+		/* 
+		 * Check if we have a valid pid is registered with us 
+		 */
+		if (mem_balloon_reg_task_pid>0) {
+            n_free_physical_pages = global_zone_page_state(NR_FREE_PAGES);
+			if (n_free_physical_pages  < MEM_BALLOON_THRESHOLD_PAGES) {
+				memset(&mem_balloon_siginfo, 0, sizeof(struct kernel_siginfo));
+				
+				mem_balloon_siginfo.si_signo = SIG_BALLOON;
+				mem_balloon_siginfo.si_code = SI_KERNEL;
+				mem_balloon_siginfo.si_int = 1234; 
+				
+				rcu_read_lock();
+				mem_balloon_reg_process_task_struct = pid_task(find_get_pid(mem_balloon_reg_task_pid), 
+														PIDTYPE_PID);
+				rcu_read_unlock();
+
+				/* If the registered process hasn't died yet, only then send the signal */
+				if (mem_balloon_reg_process_task_struct) {
+					if (send_sig_info(SIG_BALLOON, &mem_balloon_siginfo, mem_balloon_reg_process_task_struct) < 0) {
+						printk("error sending SIGBALLOON signal in page_alloc.c\n");
+					}
+
+					/* Unset the flag so that no signal should be sent till the flag is set again */
+					mem_balloon_should_send_signal=0;
+					
+                    
+				}
+				/* If the process has died, unset the saved pid to avoid unnecessary efforts */
+				else {
+					printk("No process found with the pid so resetting the saved pid\n");
+					mem_balloon_reg_task_pid=-1;
+				}
+			}
+		}
+    }
+
+    /* Schedule a work item in the work queue to set the flag after x (10) seconds */
+    INIT_DELAYED_WORK(&mem_balloon_flag_set_delayed_work, 
+                    mem_balloon_set_signal_flag_work_handler);
+    schedule_delayed_work(&mem_balloon_flag_set_delayed_work, 10*HZ);
+}
+
+
+/* 
+ * Implementation of register ballooning system call.
+ * As soon as this syscall is invoked, mem_balloon_is_active flag is set, which disables
+ * swapping systemwide. The added code in get_scan_count in vmscan.c does this.
+ */
     /*
      * Following approaches were explored to disable swapping of anon pages
      *  - Pinning of process pages in RAM 
@@ -72,22 +143,7 @@ void mb_disable_anon_page_swap(void){
      *    the best one, considering it has a very clean code change and just instructs
      *    that no anon page must be swapped. So, kernel won't even try to loop
      *    through anon pages.
-     *
-     * The vm_swappiness param is not as important as of now, as we are directly 
-     * checking in vm_scan.c that if memory ballooning is enabled, set the scan_balance
-     * to SCAN_FILE.
      */
-
-    DEBUG_PRINT("Trying to change vm_swappinees to disable swapping\n");
-    // vm_swappiness = 0; // To Do : Check if a mutex is needed here
-    // DEBUG_PRINT("vm_swappiness changed to 0\n");
-}
-
-
-
-/* 
- * Implementation of register ballooning system call.
- */
 SYSCALL_DEFINE0(init_ballooning){
     DEBUG_PRINT("init_ballooning syscall has been called\n");
     DEBUG_PRINT("PID of calling process is : %d\n", current->pid);
@@ -96,18 +152,17 @@ SYSCALL_DEFINE0(init_ballooning){
      * Save the current process to send the SIGBALLOON signal when needed
      * Also, mark the mem_balloon_is_active flag to enable the check
      * for physical memory.
-     *
-     * Note to self : current is a macro defined in arch/x86/include/asm/current.h
-     * and expands to a function returning pointer (task_struct) to the 
-     * current process
     */  
-
     mem_balloon_reg_task_pid = current->pid;
-    mem_balloon_is_active = 1;
-
-    DEBUG_PRINT("Saved the current process identity for sending ballooning signal later\n");
     
-    mb_disable_anon_page_swap();
+    if(mem_balloon_is_active == 0) {
+        mem_balloon_is_active = 1;
+        DEBUG_PRINT("Since, this is first syscall invoc, invoking work item for signalling mechanism\n");
+        INIT_DELAYED_WORK(&mem_balloon_flag_set_delayed_work, 
+                                        mem_balloon_set_signal_flag_work_handler);
+        schedule_delayed_work(&mem_balloon_flag_set_delayed_work, 2);
+    }
+    mem_balloon_is_active = 1;
 
     return 0;
 }
@@ -118,16 +173,19 @@ SYSCALL_DEFINE0(init_ballooning){
  * Will be used by userspace application to suggest pages to swap
  * Input : an array of start VAs of pages to swap out, size of the array
  */
-
- /*
-  * The PA vs VA dilemma : There are two options when suggesting pages to swap out 
-  * 1. Suggesting physical page frames, 2. Suggesting virtual page numbers
-  * The first is a breach of security as no door should be opened to userspace to 
-  * manipulate physical pages directly as they don't respect process isolation and 
-  * concern boundaries. So, I went ahead with virtual pages although there's a slight
-  * performance impact due to the repeated VA->PA translation involved before swapping.  
- */
-SYSCALL_DEFINE2(mb_suggest_swap, unsigned long long* __user, virt_pg_list_start, unsigned long long, list_size){
+    /*
+    * The PA vs VA dilemma : There are two options when suggesting pages to 
+    * swap out :
+    *   1. Suggesting physical page frames
+    *   2. Suggesting virtual page numbers
+    * The first is a breach of security as no door should be opened to 
+    * userspace to manipulate physical pages directly as they don't respect 
+    * process isolation and concern boundaries. So, I went ahead with virtual 
+    * pages although there's a slightperformance impact due to the repeated 
+    * VA->PA translation involved before swapping.  
+    */
+SYSCALL_DEFINE2(mb_suggest_swap, unsigned long long* __user, virt_pg_list_start, 
+                    unsigned long long, list_size){
     unsigned i;
     struct mm_struct *cur_mm =  current->mm;
     unsigned long long va_pg_start;
@@ -139,46 +197,39 @@ SYSCALL_DEFINE2(mb_suggest_swap, unsigned long long* __user, virt_pg_list_start,
     unsigned long long ret_free_pages = 0;
     unsigned long n_to_shrink_pages;
 
-    DEBUG_PRINT("mb_suggest_swap syscall has been called with list start : %px, %llx\n", virt_pg_list_start, (unsigned long long)virt_pg_list_start);
-    DEBUG_PRINT("list size : %llu\n", list_size);
+    DEBUG_PRINT("mb_suggest_swap syscall:: list start: %px, list size : %llu\n", virt_pg_list_start, list_size);
 
     virt_pg_list_kernel = kmalloc(sizeof(unsigned long long)*list_size,GFP_KERNEL);
 
     n_bytes_uncopied = copy_from_user(virt_pg_list_kernel, virt_pg_list_start, sizeof(unsigned long long)*list_size);
 
     if(n_bytes_uncopied) {
-        DEBUG_PRINT("copy_to_user couldn't copy %llu bytes\n", n_bytes_uncopied);
+        DEBUG_PRINT("mb_suggest_swap syscall::copy_to_user couldn't copy %llu bytes\n", n_bytes_uncopied);
     }
 
     for(i=0; i<list_size; ++i) {
         va_pg_start = *(virt_pg_list_kernel+i);
 
         ret_val_madvise = do_madvise(cur_mm, va_pg_start, PAGE_SIZE_BYTES, MADV_PAGEOUT);
-        // ret_free_pages += mb_shrink_all_memory((unsigned long) 4);
         if(ret_val_madvise) {
             DEBUG_PRINT("------ERROR : do_madvise failed and returned non zero value for VA : %llx --------\n", va_pg_start);
             break;
         }
-
-        
     }
 
     kfree(virt_pg_list_kernel);
-
-    // DEBUG_PRINT("mb_shrink_all_memory returned total %lu pages as freed pages\n", ret_free_pages);
-
-    // DEBUG_PRINT("Sleeping for 1 second before calling mb_shrink_all_memory funtion\n");
-    // msleep(1000);
     
-    DEBUG_PRINT("Calling mb_shrink_all_memory funtion\n");
     n_to_shrink_pages = (unsigned long )list_size;
 
-    // Try to claim at least 256MB from inactive anon lru list (which have completed write to swap) 
-    if(n_to_shrink_pages < (1<<16)) {
-        n_to_shrink_pages = (1<<16);
+    /*
+     * Try to claim at least N_RECLAIM_INACT_PAGES from inactive anon lru 
+     * list, which have completed write to swap 
+    */
+    if(n_to_shrink_pages < N_RECLAIM_INACT_PAGES) {
+        n_to_shrink_pages = N_RECLAIM_INACT_PAGES;
     }
     ret_free_pages = mb_shrink_all_memory(n_to_shrink_pages);
-    DEBUG_PRINT("mb_shrink_all_memory returned %llu pages as freed pages\n", ret_free_pages);
+    DEBUG_PRINT("mb_suggest_swap syscall:: mb_shrink_all_memory freed %llu pages = %llu MB\n", ret_free_pages, ret_free_pages>>8);
 
     return 0;
 }

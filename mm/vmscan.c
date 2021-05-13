@@ -63,6 +63,7 @@
 
 /*
  * Edit by Shashank
+ * Flag declared in mem_ballooning.c file
 */
 extern int mem_balloon_is_active;
 
@@ -1098,23 +1099,6 @@ static unsigned int shrink_page_list(struct list_head *page_list,
 
 		page = lru_to_page(page_list);
 		list_del(&page->lru);
-
-		// /* Edit by Shashank 
-		//  * Allowed Conditions for anonymous pages
-		//  * 1. If Current process is kswapd, allow if :-
-		//  * 		 - page is marked for reclaim
-		//  * 2. If current process is not kswapd, then it should be our process
-		//  *
-		// */
-		// if(mem_balloon_is_active && PageAnon(page)){
-		// 	if( (current_is_kswapd() && !PageReclaim(page)) || (mem_balloon_reg_task_pid == current->pid))
-		// 		goto keep;
-        //  }
- 
-        //  page_unlock_anon_vma(anon_vma);
-        // //  return ret;
-		// }	
-		// End : Edit by Shashank 
 
 		if (!trylock_page(page))
 			goto keep;
@@ -2535,13 +2519,16 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 			}
 		}
 
-		/* Edit by Shashank */
-		
+		/* 
+		 * Edit by Shashank
+		 * Since, memory ballooning causes scan_count to always bias against
+		 * anon pages, there's no way to clear inactive pages (which we have 
+		 * swapped) out of lru list. So, we make an explicit call for freeing
+		 * from inactive anon lru list.
+		 */
 		if(mem_balloon_is_active) {
-			mb_nr_reclaimed = 0;
-			mb_nr_reclaimed += shrink_list(LRU_INACTIVE_ANON, min(max(nr_to_reclaim,4*SWAP_CLUSTER_MAX), 128*SWAP_CLUSTER_MAX),
+			mb_nr_reclaimed = shrink_list(LRU_INACTIVE_ANON, min(max(nr_to_reclaim,4*SWAP_CLUSTER_MAX), 128*SWAP_CLUSTER_MAX),
 							    lruvec, &new_sc);
-			// printk("Freed %lu pages from memory through custom called shrink_list on LRU_INACTIVE_ANON\n", mb_nr_reclaimed);
 			nr_reclaimed += mb_nr_reclaimed;								
 		}
 
@@ -4105,7 +4092,13 @@ unsigned long shrink_all_memory(unsigned long nr_to_reclaim)
 }
 #endif /* CONFIG_HIBERNATION */
 
-/* Added by Shashank */
+/* 
+ * Added by Shashank 
+ * This new function it is practically a copy of already existing
+ * function shrink_all_memory in the same file. This one has a 
+ * different scan_control and is used for freeing unmapped pages after 
+ * their writeback to swap completes. 
+*/
 unsigned long mb_shrink_all_memory(unsigned long nr_to_reclaim)
 {
 	struct scan_control sc = {
